@@ -1,0 +1,140 @@
+# HKIA Access Mode Choice Text Mining
+
+import nltk 
+from nltk import FreqDist
+nltk.download('stopwords')
+import pandas as pd 
+pd.set_option("display.max_colwidth", 200) 
+import numpy as np 
+import re 
+import spacy
+import gensim 
+from gensim import corpora 
+# libraries for visualization (new)
+import pyLDAvis
+import pyLDAvis.gensim 
+import matplotlib.pyplot as plt
+import seaborn as sns
+get_ipython().run_line_magic('matplotlib', 'inline')
+
+from nltk.corpus import stopwords 
+stop_words = stopwords.words('english')
+
+
+### Data-preprocessing 
+
+hkia_df = pd.read_csv('./data/topic.csv')
+hkia_replies_df = pd.read_csv('./data/reply.csv')
+    # Re-Order columns *new*
+cols = ['topic_id', 'heading', 'username', 'location', 'datetime', 'topic_desc']
+hkia_df = hkia_df[cols]
+hkia_df.set_index('topic_id', inplace=True)
+hkia_df
+hkia_replies_df.set_index('topic_id', inplace=True)
+    # *new* #
+def filter_fn(row):
+    if "Message from TripAdvisor staff" in row['reply_content']:
+        return False
+    else:
+        return True
+m = hkia_replies_df.apply(filter_fn, axis=1)
+hkia_replies_df[m]
+    # Concat both the replies and topics data
+topic_df = pd.concat(
+    [hkia_df['topic_desc'], hkia_replies_df['reply_content']])
+topic_df = topic_df.to_frame(name='topic_content')
+    # Group the data by topic_id and then merge text 
+def merge_text(x):
+    return pd.Series(dict(topic_content='\n'.join(x['topic_content'])))
+topic_df = topic_df.groupby('topic_id').apply(merge_text)
+topic_df
+
+######
+topic_df['topic_content'] = topic_df['topic_content'].str.replace("[^a-zA-Z#]", " ")
+######
+
+
+### function to plot most frequent terms
+def freq_words(x, terms=30):
+    all_words = ' '.join([text for text in x])
+    all_words = all_words.split()
+
+    fdist = FreqDist(all_words)
+    words_df = pd.DataFrame({'word': list(fdist.keys()),
+                             'count': list(fdist.values())})
+    # selecting top 20 most frequent words
+    d = words_df.nlargest(columns="count", n=terms)
+    plt.figure(figsize=(20, 5))
+    ax = sns.barplot(data=d, x="word", y="count")
+    ax.set(ylabel='Count')
+    plt.show()
+
+
+with pd.option_context('display.max_colwidth', -1):
+    print topic_df['topic_content']
+
+
+freq_words(topic_df['topic_content'])
+
+
+### Removing stop word
+
+stop_words = stopwords.words('english')
+def remove_stopwords(p):
+    p_new = " ".join([i for i in p if i not in stop_words])
+    return p_new
+t_cont = [td.lower() for td in t_cont]
+topic_df['topic_content'] = topic_df['topic_content'].apply(lambda x: ' '.join([w for
+                                                                                w in x.split() if len(w) > 2]))
+t_cont = [remove_stopwords(td.split()) for td in topic_df['topic_content']]
+
+
+###
+freq_words(t_cont)
+###
+
+
+### Lemmatization
+get_ipython().system('python -m spacy download en #one time run')
+nlp = spacy.load('en', disable=['parser', 'ner'])
+def lemmatization(texts, tags=['NOUN', 'ADJ']):
+    output = []
+    for sent in texts:
+        doc = nlp(" ".join(sent))
+        output.append([token.lemma_ for token in doc if
+                       token.pos_ in tags])
+    return output
+
+####
+tokenized_tcont = pd.Series(t_cont).apply(lambda x: x.split())
+tokenized_tcont = tokenized_tcont.apply(lambda x: [unicode(i) for i in x] )
+
+print(tokenized_tcont[1])
+t_cont_lemmatized = lemmatization(tokenized_tcont)
+
+print(t_cont_lemmatized[1]) # topic descs
+t_cont_lemmatized_2 = []
+for i in range(len(t_cont_lemmatized)):
+    t_cont_lemmatized_2.append(' '.join(t_cont_lemmatized[i]))
+
+topic_df['topic_content'] = t_cont_lemmatized_2
+
+freq_words(topic_df['topic_content'], 35)
+#####
+
+
+
+### TF-IDF Analysis
+from sklearn.feature_extraction.text import TfidfVectorizer
+tfidf = TfidfVectorizer()
+topic_cont_list = topic_df['topic_content'].tolist()
+response = tfidf.fit_transform(topic_cont_list)
+topics_tfidf = pd.DataFrame(response.toarray())
+topics_tfidf.columns = tfidf.get_feature_names()
+tfidf_across_all_samples_mean = topics_tfidf.mean(axis=0)
+
+
+#########
+with pd.option_context('display.max_rows', None, 'display.max_columns', None):
+    print tfidf_across_all_samples_mean.sort_values(ascending=False)
+##########
